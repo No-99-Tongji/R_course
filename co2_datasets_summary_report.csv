@@ -1,0 +1,10 @@
+dataset_name,total_rows,total_columns,data_columns,total_entities,year_range,total_missing,completeness
+co2_dataset_05_global_fill.csv,29013,17,14,300,1750-2023,0,100.0
+co2_dataset_06_multiple_fill.csv,29013,17,14,300,1750-2023,0,100.0
+co2_dataset_07_zero_fill.csv,29013,17,14,300,1750-2023,0,100.0
+co2_dataset_08_complete_cases.csv,2593,17,14,90,1990-2022,0,100.0
+co2_dataset_09_strict_multiple.csv,26331,14,11,257,1750-2023,0,100.0
+co2_dataset_03_interpolate.csv,29013,17,14,300,1750-2023,52385,87.10307202190151
+co2_dataset_04_median_fill.csv,29013,17,14,300,1750-2023,90358,77.75430718249454
+co2_dataset_10_loose_interpolate.csv,62517,18,15,336,1700-2024,215427,77.02736855575284
+co2_dataset_02_forward_fill.csv,29013,17,14,300,1750-2023,153256,62.269130586781294
