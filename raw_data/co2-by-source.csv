@@ -1,4 +1,4 @@
-Entity,Code,Year,Annual CO₂ emissions from other industry,Annual CO₂ emissions from flaring,Annual CO₂ emissions from cement,Annual CO₂ emissions from gas,Annual CO₂ emissions from oil,Annual CO₂ emissions from coal
+Entity,Code,Year,Annual CO₂ emissions from other industry (ton),Annual CO₂ emissions from flaring (ton),Annual CO₂ emissions from cement (ton),Annual CO₂ emissions from gas (ton),Annual CO₂ emissions from oil (ton),Annual CO₂ emissions from coal (ton)
 Afghanistan,AFG,1970,,297436,47350,216651,671986,436974
 Afghanistan,AFG,1971,,304112,43234,439680,747456,359072
 Afghanistan,AFG,1972,,366400,46427,300448,626544,190528
