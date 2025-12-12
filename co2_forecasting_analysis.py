@@ -18,6 +18,7 @@ from statsmodels.tsa.stattools import adfuller, acf, pacf
 from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 from statsmodels.stats.diagnostic import acorr_ljungbox
 import warnings
+from scipy import stats
 warnings.filterwarnings('ignore')
 
 # 设置中文字体
@@ -47,6 +48,224 @@ def load_and_preprocess_data():
     
     return china_df
 
+def detect_outliers(series, method='iqr', threshold=3.0):
+    """
+    检测时间序列中的离群值
+    
+    Parameters:
+    -----------
+    series : pd.Series
+        需要检测的时间序列
+    method : str
+        检测方法，可选：'iqr'(四分位距法)、'zscore'(Z分数法)、'modified_zscore'(修正Z分数法)
+    threshold : float
+        阈值，用于Z分数方法
+    
+    Returns:
+    --------
+    outlier_indices : list
+        离群值的索引
+    outlier_info : dict
+        离群值的详细信息
+    """
+    
+    clean_series = series.dropna()
+    outlier_indices = []
+    outlier_info = {
+        'method': method,
+        'threshold': threshold,
+        'total_points': len(clean_series),
+        'outliers_detected': 0,
+        'outlier_percentage': 0.0,
+        'outlier_values': [],
+        'outlier_years': []
+    }
+    
+    if method == 'iqr':
+        # 四分位距方法
+        Q1 = clean_series.quantile(0.25)
+        Q3 = clean_series.quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        
+        mask = (clean_series < lower_bound) | (clean_series > upper_bound)
+        outlier_indices = clean_series[mask].index.tolist()
+        
+        outlier_info.update({
+            'Q1': Q1, 'Q3': Q3, 'IQR': IQR,
+            'lower_bound': lower_bound, 'upper_bound': upper_bound
+        })
+        
+    elif method == 'zscore':
+        # Z分数方法
+        z_scores = np.abs(stats.zscore(clean_series))
+        mask = z_scores > threshold
+        outlier_indices = clean_series[mask].index.tolist()
+        
+        outlier_info.update({
+            'mean': clean_series.mean(),
+            'std': clean_series.std(),
+            'max_zscore': z_scores.max()
+        })
+        
+    elif method == 'modified_zscore':
+        # 修正Z分数方法（基于中位数）
+        median = clean_series.median()
+        mad = np.median(np.abs(clean_series - median))  # 中位数绝对偏差
+        modified_z_scores = 0.6745 * (clean_series - median) / mad
+        mask = np.abs(modified_z_scores) > threshold
+        outlier_indices = clean_series[mask].index.tolist()
+        
+        outlier_info.update({
+            'median': median,
+            'mad': mad,
+            'max_modified_zscore': np.abs(modified_z_scores).max()
+        })
+    
+    # 更新离群值信息
+    if outlier_indices:
+        outlier_info['outliers_detected'] = len(outlier_indices)
+        outlier_info['outlier_percentage'] = (len(outlier_indices) / len(clean_series)) * 100
+        outlier_info['outlier_values'] = [clean_series.loc[idx] for idx in outlier_indices]
+        outlier_info['outlier_years'] = [idx.year if hasattr(idx, 'year') else idx for idx in outlier_indices]
+    
+    return outlier_indices, outlier_info
+
+def remove_outliers(df, columns, method='iqr', threshold=3.0, action='remove'):
+    """
+    从数据框中移除或替换离群值
+    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        输入数据框
+    columns : list
+        需要处理离群值的列名列表
+    method : str
+        检测方法
+    threshold : float
+        检测阈值
+    action : str
+        处理方式：'remove'(删除)、'winsorize'(缩尾)、'interpolate'(插值)
+    
+    Returns:
+    --------
+    cleaned_df : pd.DataFrame
+        处理后的数据框
+    outlier_summary : dict
+        离群值处理摘要
+    """
+    
+    cleaned_df = df.copy()
+    outlier_summary = {}
+    
+    for col in columns:
+        if col not in df.columns:
+            continue
+            
+        print(f"\n处理列 '{col}' 的离群值...")
+        
+        # 检测离群值
+        outlier_indices, outlier_info = detect_outliers(df[col], method=method, threshold=threshold)
+        outlier_summary[col] = outlier_info
+        
+        if not outlier_indices:
+            print(f"  未检测到离群值")
+            continue
+            
+        print(f"  检测到 {len(outlier_indices)} 个离群值 ({outlier_info['outlier_percentage']:.2f}%)")
+        print(f"  离群值年份: {outlier_info['outlier_years']}")
+        
+        # 处理离群值
+        if action == 'remove':
+            # 删除包含离群值的行
+            cleaned_df = cleaned_df.drop(outlier_indices)
+            print(f"  已删除 {len(outlier_indices)} 行数据")
+            
+        elif action == 'winsorize':
+            # 缩尾处理：将离群值替换为边界值
+            if method == 'iqr':
+                lower_bound = outlier_info['lower_bound']
+                upper_bound = outlier_info['upper_bound']
+                cleaned_df.loc[cleaned_df[col] < lower_bound, col] = lower_bound
+                cleaned_df.loc[cleaned_df[col] > upper_bound, col] = upper_bound
+            print(f"  已对 {len(outlier_indices)} 个离群值进行缩尾处理")
+            
+        elif action == 'interpolate':
+            # 插值处理：使用线性插值替换离群值
+            cleaned_df.loc[outlier_indices, col] = np.nan
+            cleaned_df[col] = cleaned_df[col].interpolate(method='linear')
+            print(f"  已对 {len(outlier_indices)} 个离群值进行插值处理")
+    
+    return cleaned_df, outlier_summary
+
+def create_outlier_visualization(df, columns, outlier_summary):
+    """创建离群值检测和处理的可视化图表"""
+    print("\n=== 生成离群值分析图表 ===")
+    
+    n_cols = len(columns)
+    n_rows = 2
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6*n_cols, 10))
+    if n_cols == 1:
+        axes = axes.reshape(-1, 1)
+    
+    fig.suptitle('离群值检测与处理分析', fontsize=16, fontweight='bold')
+    
+    colors = ['blue', 'green', 'red', 'purple']
+    
+    for i, col in enumerate(columns):
+        if col not in df.columns:
+            continue
+            
+        color = colors[i % len(colors)]
+        series = df[col].dropna()
+        outlier_info = outlier_summary.get(col, {})
+        
+        # 第一行：箱线图
+        axes[0, i].boxplot([series], labels=[col], patch_artist=True,
+                          boxprops=dict(facecolor=color, alpha=0.3))
+        axes[0, i].set_title(f'{col} - 箱线图', fontweight='bold')
+        axes[0, i].grid(True, alpha=0.3)
+        
+        # 添加离群值信息文本
+        if outlier_info:
+            info_text = f"离群值: {outlier_info.get('outliers_detected', 0)}个"
+            info_text += f"\n比例: {outlier_info.get('outlier_percentage', 0):.2f}%"
+            axes[0, i].text(0.02, 0.98, info_text, transform=axes[0, i].transAxes,
+                           verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
+        # 第二行：时间序列图
+        axes[1, i].plot(series.index, series, color=color, linewidth=1.5, alpha=0.7, label='原始数据')
+        axes[1, i].set_title(f'{col} - 时间序列', fontweight='bold')
+        axes[1, i].set_ylabel(col)
+        axes[1, i].grid(True, alpha=0.3)
+        axes[1, i].legend()
+        
+        # 标记离群值
+        if outlier_info and outlier_info.get('outliers_detected', 0) > 0:
+            outlier_years = outlier_info.get('outlier_years', [])
+            outlier_values = outlier_info.get('outlier_values', [])
+            
+            # 在时间序列图上标记离群值
+            for year, value in zip(outlier_years, outlier_values):
+                try:
+                    year_index = pd.to_datetime(str(year), format='%Y') if isinstance(year, int) else year
+                    axes[1, i].scatter(year_index, value, color='red', s=100, alpha=0.8, 
+                                     marker='x', linewidth=3, label='离群值' if year == outlier_years[0] else "")
+                except:
+                    pass
+            
+            if outlier_years:
+                axes[1, i].legend()
+    
+    plt.tight_layout()
+    plt.savefig('/Users/dreamweaver/PycharmProjects/R_course/outlier_analysis.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    return True
+
 def explore_china_data(china_df):
     """探索中国数据的基本特征"""
     print("\n=== 中国数据探索 ===")
@@ -73,6 +292,101 @@ def explore_china_data(china_df):
     print("\n缺失值统计:")
     print(china_clean.isnull().sum())
     return china_clean
+
+def detect_and_handle_outliers(china_clean):
+    """检测和处理离群值"""
+    print("\n=== 离群值检测与处理 ===")
+    
+    # 选择需要检测离群值的关键变量
+    key_variables = ['co2_total', 'gdp_per_capita', 'population', 'coal_share']
+    
+    # 检测离群值（不处理，仅分析）
+    print("\n1. 离群值检测结果:")
+    all_outlier_summary = {}
+    
+    for var in key_variables:
+        if var in china_clean.columns:
+            outlier_indices, outlier_info = detect_outliers(china_clean[var], method='iqr')
+            all_outlier_summary[var] = outlier_info
+            
+            if outlier_info['outliers_detected'] > 0:
+                print(f"\n{var}:")
+                print(f"  检测到 {outlier_info['outliers_detected']} 个离群值 ({outlier_info['outlier_percentage']:.2f}%)")
+                print(f"  离群值年份: {outlier_info['outlier_years']}")
+                print(f"  离群值范围: {min(outlier_info['outlier_values']):.2e} ~ {max(outlier_info['outlier_values']):.2e}")
+            else:
+                print(f"\n{var}: 未检测到离群值")
+    
+    # 创建离群值可视化
+    create_outlier_visualization(china_clean, key_variables, all_outlier_summary)
+    
+    # 对数变换后的离群值检测
+    print("\n2. 对数变换后的离群值检测:")
+    china_log = china_clean.copy()
+    log_outlier_summary = {}
+    
+    for var in key_variables:
+        if var in china_clean.columns:
+            # 对数变换
+            log_var = f'log_{var}'
+            china_log[log_var] = np.log(china_clean[var].replace(0, np.nan))
+            
+            # 检测对数序列的离群值
+            outlier_indices, outlier_info = detect_outliers(china_log[log_var], method='iqr')
+            log_outlier_summary[log_var] = outlier_info
+            
+            if outlier_info['outliers_detected'] > 0:
+                print(f"\n{log_var}:")
+                print(f"  检测到 {outlier_info['outliers_detected']} 个离群值 ({outlier_info['outlier_percentage']:.2f}%)")
+                print(f"  离群值年份: {outlier_info['outlier_years']}")
+    
+    # 温和处理策略：仅对极端离群值进行缩尾处理
+    print("\n3. 离群值处理策略:")
+    print("采用温和处理策略：")
+    print("- 保留历史数据的完整性")
+    print("- 仅对严重影响分析的极端离群值进行缩尾处理")
+    print("- 优先保护时间序列的连续性")
+    
+    # 对CO2排放量应用缩尾处理（仅处理最极端的离群值）
+    china_processed = china_clean.copy()
+    if 'co2_total' in all_outlier_summary and all_outlier_summary['co2_total']['outliers_detected'] > 0:
+        # 使用更严格的阈值（2.5倍IQR而非1.5倍）来识别需要处理的极端离群值
+        co2_series = china_clean['co2_total'].dropna()
+        Q1 = co2_series.quantile(0.25)
+        Q3 = co2_series.quantile(0.75)
+        IQR = Q3 - Q1
+        extreme_lower = Q1 - 2.5 * IQR
+        extreme_upper = Q3 + 2.5 * IQR
+        
+        # 应用缩尾处理
+        original_count = len(china_processed)
+        china_processed.loc[china_processed['co2_total'] < extreme_lower, 'co2_total'] = extreme_lower
+        china_processed.loc[china_processed['co2_total'] > extreme_upper, 'co2_total'] = extreme_upper
+        
+        processed_outliers = len(china_processed[
+            (china_clean['co2_total'] < extreme_lower) | 
+            (china_clean['co2_total'] > extreme_upper)
+        ])
+        
+        if processed_outliers > 0:
+            print(f"对CO2排放量的 {processed_outliers} 个极端离群值进行了缩尾处理")
+        else:
+            print("未发现需要处理的极端离群值")
+    
+    # 返回处理结果
+    outlier_results = {
+        'original_data': china_clean,
+        'processed_data': china_processed,
+        'original_outliers': all_outlier_summary,
+        'log_outliers': log_outlier_summary,
+        'processing_summary': {
+            'method': 'Winsorizing with 2.5*IQR threshold',
+            'variables_processed': ['co2_total'],
+            'data_integrity': 'High - minimal intervention applied'
+        }
+    }
+    
+    return china_processed, outlier_results
 
 def create_time_series_plots(china_clean):
     """创建时序图表"""
@@ -628,10 +942,54 @@ def generate_report(results, comparison_df, best_model_name, scenarios):
 3. **人口因素**: 总人口 - 反映排放规模的基础
 4. **能源结构**: 煤炭排放占比 - 中国能源结构的关键指标
 
-### 2.3 数据可视化分析
+### 2.3 离群值检测与处理
+
+在时间序列分析中，离群值可能严重影响模型的拟合效果和预测精度。本研究采用系统性的离群值检测与处理策略：
+
+**2.3.1 检测方法**
+采用四分位距（IQR）方法检测离群值：
+- **标准**: 超出 [Q1-1.5×IQR, Q3+1.5×IQR] 范围的观测值
+- **优势**: 对非正态分布数据稳健，适合长时间序列
+- **应用范围**: 所有核心变量的原始值和对数变换值
+
+**2.3.2 检测结果**"""
+    
+    # 获取离群值分析结果
+    outlier_analysis = results.get('outlier_analysis', {})
+    original_outliers = outlier_analysis.get('original_outliers', {})
+    
+    outlier_summary_text = ""
+    for var, info in original_outliers.items():
+        if info.get('outliers_detected', 0) > 0:
+            outlier_summary_text += f"""
+- **{var}**: 检测到 {info['outliers_detected']} 个离群值 ({info['outlier_percentage']:.1f}%)
+  - 离群年份: {', '.join(map(str, info['outlier_years'][:5]))}{'...' if len(info['outlier_years']) > 5 else ''}
+  - 数值范围: {min(info['outlier_values']):.2e} ~ {max(info['outlier_values']):.2e}"""
+        else:
+            outlier_summary_text += f"\n- **{var}**: 未检测到离群值"
+    
+    report_content += f"""{outlier_summary_text}
+
+**图表说明**: 离群值分析图(outlier_analysis.png)展示了各变量的箱线图和时间序列分布，红色标记为检测到的离群值。
+
+**2.3.3 处理策略**
+基于时间序列数据的特殊性，采用**温和干预原则**：
+
+1. **数据完整性优先**: 保持历史时间序列的连续性
+2. **最小干预原则**: 仅对严重影响分析的极端离群值进行处理  
+3. **缩尾处理方法**: 采用2.5倍IQR阈值，将极端值调整至合理边界
+4. **透明度原则**: 完整记录所有处理步骤，确保结果可重现
+
+处理效果：{outlier_analysis.get('processing_summary', {}).get('method', '未进行处理')}，数据完整性：{outlier_analysis.get('processing_summary', {}).get('data_integrity', '高')}
+
+### 2.4 数据可视化分析
 如图1所示，中国碳排放量在1907-2023年期间呈现明显的指数增长趋势，特别是在改革开放后增长加速。图中标注的政策断点显示了国际气候协议对中国碳排放政策的重要影响节点。
 
 **图1: 中国碳排放相关指标时序图 (china_timeseries_overview.png)**
+
+离群值分析图表进一步揭示了数据质量特征，为后续建模提供了重要参考。
+
+**图表附录: 离群值检测分析图 (outlier_analysis.png)**
 
 ## 3. 建模方法论与步骤
 
@@ -837,6 +1195,8 @@ def main():
     china_df = load_and_preprocess_data()
     # 探索数据
     china_clean = explore_china_data(china_df)
+    # 检测和处理离群值
+    china_clean, outlier_results = detect_and_handle_outliers(china_clean)
     # 添加政策断点虚拟变量
     china_clean = add_policy_dummies(china_clean)
     # 对数差分处理
@@ -872,6 +1232,7 @@ def main():
     # 保存结果
     results = {
         'data': china_clean,
+        'outlier_analysis': outlier_results,
         'models': {
             'arima': (arima_model, arima_order),
             'arimax': (arimax_model, arimax_order),
@@ -900,6 +1261,7 @@ def main():
     print("\n🎉 中国碳排放量时序预测分析完成!")
     print("📊 已生成可视化图表:")
     print("   - china_timeseries_overview.png (时序概览图)")
+    print("   - outlier_analysis.png (离群值分析图)")
     print("   - log_diff_comparison.png (对数差分对比图)")
     print("   - correlation_heatmap.png (相关性热力图)")
     print("   - model_results_summary.png (模型结果汇总图)")
@@ -907,6 +1269,17 @@ def main():
     print("   - acf_pacf_plots.png (ACF/PACF分析图)")
     print("   - model_comparison.png (模型比较图)")
     print("📝 已生成分析报告: CO2_Forecasting_Report.md")
+    print("🔍 离群值分析摘要:")
+    
+    # 输出离群值检测摘要
+    if 'outlier_analysis' in results:
+        outlier_summary = results['outlier_analysis']['original_outliers']
+        for var, info in outlier_summary.items():
+            outliers_count = info.get('outliers_detected', 0)
+            if outliers_count > 0:
+                print(f"   - {var}: {outliers_count}个离群值 ({info.get('outlier_percentage', 0):.1f}%)")
+            else:
+                print(f"   - {var}: 无离群值")
     
     return results
 
